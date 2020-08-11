@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//go:generate ../../../.run-controller-gen.sh webhook paths=. output:dir=.
+//go:generate ../../../.run-controller-gen.sh webhook:webhookVersions={v1,v1beta1} paths=. output:dir=.
 
 // +groupName=testdata.kubebuilder.io
 // +versionName=v1

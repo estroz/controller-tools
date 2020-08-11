@@ -26,12 +26,16 @@ import (
 	"fmt"
 	"strings"
 
-	admissionreg "k8s.io/api/admissionregistration/v1beta1"
+	admissionreg "k8s.io/api/admissionregistration/v1"
+	admissionreglegacy "k8s.io/api/admissionregistration/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-tools/pkg/genall"
 	"sigs.k8s.io/controller-tools/pkg/markers"
 )
+
+// The default webhook config version to generate.
+const defaultVersion = "v1"
 
 var (
 	// ConfigDefinition s a marker for defining Webhook manifests.
@@ -112,6 +116,14 @@ func verbToAPIVariant(verbRaw string) admissionreg.OperationType {
 	}
 }
 
+// admissionReviewVersions are version of AdmissionReview that the webhook accepts.
+// Since controller-runtime supports v1beta1 AdmissionReviews, so must the default webhooks.
+// TODO(estroz): perhaps this should be a webhook marker value.
+var admissionReviewVersions = []string{
+	"v1",
+	"v1beta1",
+}
+
 // ToMutatingWebhook converts this rule to its Kubernetes API form.
 func (c Config) ToMutatingWebhook() (admissionreg.MutatingWebhook, error) {
 	if !c.Mutating {
@@ -124,12 +136,13 @@ func (c Config) ToMutatingWebhook() (admissionreg.MutatingWebhook, error) {
 	}
 
 	return admissionreg.MutatingWebhook{
-		Name:          c.Name,
-		Rules:         c.rules(),
-		FailurePolicy: c.failurePolicy(),
-		MatchPolicy:   matchPolicy,
-		ClientConfig:  c.clientConfig(),
-		SideEffects:   c.sideEffects(),
+		Name:                    c.Name,
+		AdmissionReviewVersions: admissionReviewVersions,
+		Rules:                   c.rules(),
+		FailurePolicy:           c.failurePolicy(),
+		MatchPolicy:             matchPolicy,
+		ClientConfig:            c.clientConfig(),
+		SideEffects:             c.sideEffects(),
 	}, nil
 }
 
@@ -145,12 +158,13 @@ func (c Config) ToValidatingWebhook() (admissionreg.ValidatingWebhook, error) {
 	}
 
 	return admissionreg.ValidatingWebhook{
-		Name:          c.Name,
-		Rules:         c.rules(),
-		FailurePolicy: c.failurePolicy(),
-		MatchPolicy:   matchPolicy,
-		ClientConfig:  c.clientConfig(),
-		SideEffects:   c.sideEffects(),
+		Name:                    c.Name,
+		AdmissionReviewVersions: admissionReviewVersions,
+		Rules:                   c.rules(),
+		FailurePolicy:           c.failurePolicy(),
+		MatchPolicy:             matchPolicy,
+		ClientConfig:            c.clientConfig(),
+		SideEffects:             c.sideEffects(),
 	}, nil
 }
 
@@ -248,7 +262,14 @@ func (c Config) sideEffects() *admissionreg.SideEffectClass {
 // +controllertools:marker:generateHelp
 
 // Generator generates (partial) {Mutating,Validating}WebhookConfiguration objects.
-type Generator struct{}
+type Generator struct {
+	// WebhookVersions specifies the target API versions of the webhook config type itself to
+	// generate. Defaults to v1.
+	//
+	// The first version listed will be assumed to be the "default" version and
+	// will not get a version suffix in the output filename.
+	WebhookVersions []string `marker:"webhookVersions,optional"`
+}
 
 func (Generator) RegisterMarkers(into *markers.Registry) error {
 	if err := into.Register(ConfigDefinition); err != nil {
@@ -258,7 +279,7 @@ func (Generator) RegisterMarkers(into *markers.Registry) error {
 	return nil
 }
 
-func (Generator) Generate(ctx *genall.GenerationContext) error {
+func (g Generator) Generate(ctx *genall.GenerationContext) error {
 	var mutatingCfgs []admissionreg.MutatingWebhook
 	var validatingCfgs []admissionreg.ValidatingWebhook
 	for _, root := range ctx.Roots {
@@ -279,37 +300,66 @@ func (Generator) Generate(ctx *genall.GenerationContext) error {
 		}
 	}
 
-	var objs []interface{}
-	if len(mutatingCfgs) > 0 {
-		objs = append(objs, &admissionreg.MutatingWebhookConfiguration{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "MutatingWebhookConfiguration",
-				APIVersion: admissionreg.SchemeGroupVersion.String(),
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "mutating-webhook-configuration",
-			},
-			Webhooks: mutatingCfgs,
-		})
+	webhookVersions := g.WebhookVersions
+	if len(webhookVersions) == 0 {
+		webhookVersions = []string{defaultVersion}
 	}
 
-	if len(validatingCfgs) > 0 {
-		objs = append(objs, &admissionreg.ValidatingWebhookConfiguration{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "ValidatingWebhookConfiguration",
-				APIVersion: admissionreg.SchemeGroupVersion.String(),
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "validating-webhook-configuration",
-			},
-			Webhooks: validatingCfgs,
-		})
-
+	// Create a list of mutating and validating webhook configs for each allowed version.
+	versionedWebhooks := make([][]interface{}, len(webhookVersions))
+	for i, ver := range webhookVersions {
+		switch ver {
+		case "v1":
+			if len(mutatingCfgs) > 0 {
+				cfg := &admissionreg.MutatingWebhookConfiguration{}
+				cfg.TypeMeta, cfg.ObjectMeta = makeWebhookConfigMetas("mutating", admissionreg.SchemeGroupVersion.String())
+				cfg.Webhooks = mutatingCfgs
+				versionedWebhooks[i] = append(versionedWebhooks[i], cfg)
+			}
+			if len(validatingCfgs) > 0 {
+				cfg := &admissionreg.ValidatingWebhookConfiguration{}
+				cfg.TypeMeta, cfg.ObjectMeta = makeWebhookConfigMetas("validating", admissionreg.SchemeGroupVersion.String())
+				cfg.Webhooks = validatingCfgs
+				versionedWebhooks[i] = append(versionedWebhooks[i], cfg)
+			}
+		case "v1beta1":
+			if len(mutatingCfgs) > 0 {
+				cfg := &admissionreglegacy.MutatingWebhookConfiguration{}
+				cfg.TypeMeta, cfg.ObjectMeta = makeWebhookConfigMetas("mutating", admissionreglegacy.SchemeGroupVersion.String())
+				cfg.Webhooks = v1Tov1beta1MutatingWebhooks(mutatingCfgs...)
+				versionedWebhooks[i] = append(versionedWebhooks[i], cfg)
+			}
+			if len(validatingCfgs) > 0 {
+				cfg := &admissionreglegacy.ValidatingWebhookConfiguration{}
+				cfg.TypeMeta, cfg.ObjectMeta = makeWebhookConfigMetas("validating", admissionreglegacy.SchemeGroupVersion.String())
+				cfg.Webhooks = v1Tov1beta1ValidatingWebhooks(validatingCfgs...)
+				versionedWebhooks[i] = append(versionedWebhooks[i], cfg)
+			}
+		}
 	}
 
-	if len(objs) > 0 {
-		return ctx.WriteYAML("manifests.yaml", objs...)
+	for i, webhooks := range versionedWebhooks {
+		if len(webhooks) > 0 {
+			var fileName string
+			if i == 0 {
+				fileName = "manifests.yaml"
+			} else {
+				fileName = fmt.Sprintf("manifests.%s.yaml", webhookVersions[i])
+			}
+			if err := ctx.WriteYAML(fileName, webhooks...); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
+}
+
+// makeWebhookConfigMetas returns a TypeMeta and ObjectMeta a webhook config for some webhook type and apiVersion.
+// typ should be one of "mutating" or "validating".
+func makeWebhookConfigMetas(typ, apiVersion string) (tm metav1.TypeMeta, om metav1.ObjectMeta) {
+	tm.Kind = strings.Title(typ) + "WebhookConfiguration"
+	tm.APIVersion = apiVersion
+	om.SetName(strings.ToLower(typ) + "-webhook-configuration")
+	return tm, om
 }

@@ -83,6 +83,11 @@ func (Generator) Help() *markers.DefinitionHelp {
 			Summary: "generates (partial) {Mutating,Validating}WebhookConfiguration objects.",
 			Details: "",
 		},
-		FieldHelp: map[string]markers.DetailedHelp{},
+		FieldHelp: map[string]markers.DetailedHelp{
+			"WebhookVersions": markers.DetailedHelp{
+				Summary: "specifies the target API versions of the webhook config type itself to generate. Defaults to v1. ",
+				Details: "The first version listed will be assumed to be the \"default\" version and will not get a version suffix in the output filename.",
+			},
+		},
 	}
 }
